@@ -54,6 +54,7 @@ class Economic_Profile:
         self.battery_duration = battery_duration
         self.battery_power_relative = battery_power_relative
         self.battery_size = self.battery_power_relative*self.battery_duration
+        self.wacc_factor = 1
         self.elec_stack_replacement = elec_stack_replacement
         # Read in General Assumptions
         self.electrolyser_capacity = electrolyser_capacity
@@ -88,7 +89,7 @@ class Economic_Profile:
         
         # Take the moving average
         profile = renewables_data
-        moving_average_profile = moving_average_xr(profile, self.battery_duration, dim='time')
+        moving_average_profile = moving_average_xr(profile, round(self.battery_duration), dim='time')
         
         
         # Work out the difference
@@ -776,37 +777,32 @@ class Economic_Profile:
         lat_len = len(latitudes)
         lon_len = len(longitudes)
         years_len = len(years)
-        new_year = [years[0]-1]
-        years_appended = np.concatenate((new_year, years))
-        zero_array_renew = np.zeros((1, int(lat_len), int(lon_len)))
-        zero_array_other = np.zeros((1, int(lat_len), int(lon_len)))
-        zero_array_solar = np.zeros((1, int(lat_len), int(lon_len)))
-        zero_array_wind = np.zeros((1, int(lat_len), int(lon_len)))
-        zero_array_elec = np.zeros((1, int(lat_len), int(lon_len)))
-        
+        year0 = [years[0]-1] # e.g. 2019 if first year is 2020
+        years_appended = np.concatenate((year0, years))
+
         # Create new arrays for storage
-        renewables_array = xr.DataArray(renewables_data_yearly, dims=('year', 'latitude', 'longitude'),
+        renewables_array = xr.DataArray(np.zeros((years_len, int(lat_len), int(lon_len))), dims=('year', 'latitude', 'longitude'),
                                         coords={'year': years,
                                                 'latitude': latitudes,
                                                 'longitude': longitudes})
-        solar_costs_array = xr.DataArray(zero_array_solar, dims=('year', 'latitude', 'longitude'),
-                                        coords={'year': new_year,
+        solar_costs_array = xr.DataArray(np.zeros((1, int(lat_len), int(lon_len))), dims=('year', 'latitude', 'longitude'),
+                                        coords={'year': year0,
                                                 'latitude': latitudes,
                                                  'longitude': longitudes})
-        wind_costs_array = xr.DataArray(zero_array_wind, dims=('year', 'latitude', 'longitude'),
-                                        coords={'year': new_year,
+        wind_costs_array = xr.DataArray(np.zeros((1, int(lat_len), int(lon_len))), dims=('year', 'latitude', 'longitude'),
+                                        coords={'year': year0,
                                                 'latitude': latitudes,
                                                  'longitude': longitudes})
-        renew_costs_array = xr.DataArray(zero_array_renew, dims=('year', 'latitude', 'longitude'),
-                                        coords={'year': new_year,
+        renew_costs_array = xr.DataArray(np.zeros((1, lat_len, lon_len)), dims=('year', 'latitude', 'longitude'),
+                                        coords={'year': year0,
                                                 'latitude': latitudes,
                                                  'longitude': longitudes})
-        other_costs_array = xr.DataArray(zero_array_other, dims=('year', 'latitude', 'longitude'),
-                                        coords={'year': new_year,
+        other_costs_array = xr.DataArray(np.zeros((1, lat_len, lon_len)), dims=('year', 'latitude', 'longitude'),
+                                        coords={'year': year0,
                                                 'latitude': latitudes,
                                                  'longitude': longitudes})
-        elec_costs_array = xr.DataArray(zero_array_elec, dims=('year', 'latitude', 'longitude'),
-                                        coords={'year': new_year,
+        elec_costs_array = xr.DataArray(np.zeros((1, int(lat_len), int(lon_len))), dims=('year', 'latitude', 'longitude'),
+                                        coords={'year': year0,
                                                 'latitude': latitudes,
                                                  'longitude': longitudes})
         
@@ -822,18 +818,18 @@ class Economic_Profile:
         
         # Calculate other costs
         battery_capital_costs = self.battery_cost * self.battery_power_relative * self.renewables_capacity
-        compressor_costs = 0.887*self.renewables_capacity
-        #desalination_costs = 0.491*self.renewables_capacity
-        other_capital_costs = battery_capital_costs + compressor_costs
+        compressor_costs = 0.887 * self.renewables_capacity
+        desalination_costs = 0.491 * self.renewables_capacity
+        other_capital_costs = battery_capital_costs + compressor_costs + desalination_costs
         
         
         # Calculate electrolyser and total renewable capital costs
         elec_capital_costs = self.calculate_electrolyser_capex(geodata, capacity)
-        renew_capital_costs = wind_capital_costs  * (1-solar_fraction) + solar_capital_costs * solar_fraction
+        renew_capital_costs = wind_capital_costs * (1-solar_fraction) + solar_capital_costs * solar_fraction
         
         # Transfer capital costs across to the relevant cost arrays
         elec_costs_array[0, :, :] = elec_capital_costs
-        solar_costs_array[0, :, :] = solar_capital_costs  * (solar_fraction)
+        solar_costs_array[0, :, :] = solar_capital_costs * (solar_fraction)
         wind_costs_array[0, :, :] = turbine_foundation_costs * (1 - solar_fraction)
         renew_costs_array[0, :, :] = renew_capital_costs
         other_costs_array[0, :, :] = other_capital_costs
@@ -848,6 +844,7 @@ class Economic_Profile:
         solar_costs_combined = xr.concat([solar_costs_array, solar_op_costs_array], dim='year')
         wind_costs_combined = xr.concat([wind_costs_array, wind_op_costs_array], dim='year')
         elec_costs_combined = xr.concat([elec_costs_array, elec_op_costs_array], dim = 'year')
+        renew_combined = wind_costs_combined + solar_costs_combined
         other_costs_combined = xr.concat([other_costs_array, elec_op_costs_array*0], dim = 'year')
         total_costs_array = elec_costs_combined + solar_costs_combined + wind_costs_combined + other_costs_combined
         renewables_array = xr.concat([solar_costs_array * 0, renewables_array], dim = 'year')
@@ -855,11 +852,11 @@ class Economic_Profile:
         
         # Create a dataset with all the arrays
         data_vars = {'renewable_electricity': renewables_array,
-                     'solar costs': solar_costs_array,
-                     'wind costs': wind_costs_array,
-                     'renewable costs': renew_costs_array,
-                     'other costs': other_costs_array,
-                     'electrolyser costs': elec_costs_array,
+                     'solar costs': solar_costs_combined,
+                     'wind costs': wind_costs_combined,
+                     'renewable costs': renew_combined,
+                     'other costs': other_costs_combined,
+                     'electrolyser costs': elec_costs_combined,
                      'total costs': total_costs_array,
                      'configuration': offshore_config}
         coords = {'year': years_appended,
